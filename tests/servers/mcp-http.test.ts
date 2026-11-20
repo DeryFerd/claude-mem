@@ -85,6 +85,34 @@ describe('parseHttpArgs', () => {
     });
     expect(parsed).toEqual({ host: '127.0.0.1', port: 37790 });
   });
+
+  it('leaves the session limits unset so the built-in defaults apply', () => {
+    expect(parseHttpArgs(['--http'], {})).toEqual({ host: '127.0.0.1', port: 37790 });
+    // A blank variable is how a shell unsets one, so it must not be a limit.
+    expect(parseHttpArgs(['--http'], { CLAUDE_MEM_MCP_MAX_SESSIONS: '', CLAUDE_MEM_MCP_SESSION_IDLE_MS: '  ' }))
+      .toEqual({ host: '127.0.0.1', port: 37790 });
+  });
+
+  it('reads the session limits from the environment', () => {
+    expect(parseHttpArgs(['--http'], {
+      CLAUDE_MEM_MCP_MAX_SESSIONS: '8',
+      CLAUDE_MEM_MCP_SESSION_IDLE_MS: '30000',
+      CLAUDE_MEM_MCP_SWEEP_INTERVAL_MS: '1000',
+    })).toEqual({ host: '127.0.0.1', port: 37790, maxSessions: 8, sessionIdleMs: 30000, sweepIntervalMs: 1000 });
+  });
+
+  it('refuses a session limit that is present but not a positive integer', () => {
+    for (const [name, value] of [
+      ['CLAUDE_MEM_MCP_MAX_SESSIONS', '0'],
+      ['CLAUDE_MEM_MCP_MAX_SESSIONS', '-1'],
+      ['CLAUDE_MEM_MCP_MAX_SESSIONS', 'abc'],
+      ['CLAUDE_MEM_MCP_MAX_SESSIONS', '1.5'],
+      ['CLAUDE_MEM_MCP_SESSION_IDLE_MS', 'NaN'],
+      ['CLAUDE_MEM_MCP_SWEEP_INTERVAL_MS', 'Infinity'],
+    ] as const) {
+      expect(() => parseHttpArgs(['--http'], { [name]: value })).toThrow(name);
+    }
+  });
 });
 
 describe('normalizeCwd', () => {

@@ -55,10 +55,12 @@ const MAX_BODY_BYTES = WORKER_JSON_BODY_LIMIT_BYTES;
 // Reaps sessions whose client went away without a DELETE (abandoned-session memory
 // protection). Reaping a live but idle session is cheap: the MCP Streamable HTTP spec
 // requires a client that gets 404 for its session id to initialize a new one.
+// Raise or lower it with CLAUDE_MEM_MCP_SESSION_IDLE_MS, or per server with `sessionIdleMs`.
 const SESSION_IDLE_MS = 60 * 60 * 1000;
 // How often idle sessions are looked for. It only decides how late past SESSION_IDLE_MS
 // a session goes (at most 5 of 60 minutes); each sweep is a walk over at most
 // MAX_SESSIONS entries.
+// Override with CLAUDE_MEM_MCP_SWEEP_INTERVAL_MS, or per server with `sweepIntervalMs`.
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 // roots/list blocks the client's first tool call. A client that has not opened its
 // standalone SSE stream cannot answer, and the SDK's default request timeout (60 s)
@@ -69,7 +71,8 @@ const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 // Abuse protection: every session holds an MCP Server and transport in memory until
 // it is closed or swept. A local client stuck in an initialize loop would otherwise
 // grow the process for an hour. Real use is one session per open editor or agent on
-// this machine, far below this.
+// this machine, far below this. Override with CLAUDE_MEM_MCP_MAX_SESSIONS when a host
+// runs more clients than this, or per server with `maxSessions`.
 export const MAX_SESSIONS = 256;
 
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
@@ -80,6 +83,28 @@ export interface McpHttpOptions {
   port: number;
   /** The MCP plugin root, used only to decide when PWD is safer than process.cwd(). */
   pluginRoot?: string;
+  /** The most concurrent sessions to hold. Defaults to MAX_SESSIONS; tests lower it. */
+  maxSessions?: number;
+  /** How long a session may sit idle before the sweeper reaps it. Defaults to SESSION_IDLE_MS. */
+  sessionIdleMs?: number;
+  /** How often the sweeper looks for idle sessions. Defaults to SWEEP_INTERVAL_MS. */
+  sweepIntervalMs?: number;
+}
+
+/**
+ * A positive-integer session limit from the environment. An absent or blank value
+ * means "use the built-in default" — a blank variable is how a shell unsets one. A
+ * value that is present but not a positive integer is a misconfiguration and stops
+ * the server, the same way an invalid port does.
+ */
+function positiveIntEnv(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${name}: ${raw} (expected a positive integer)`);
+  }
+  return value;
 }
 
 /** Resolves the project directory for one tool call from the request that carries it. */
@@ -99,7 +124,10 @@ function loopbackHostOrThrow(raw: string): string {
 }
 
 /**
- * Read the HTTP options from the command line and environment.
+ * Read the HTTP options from the command line and environment: host and port from
+ * `--host`/`--port` or CLAUDE_MEM_MCP_HTTP_HOST/PORT, and the session limits from
+ * CLAUDE_MEM_MCP_MAX_SESSIONS, CLAUDE_MEM_MCP_SESSION_IDLE_MS and
+ * CLAUDE_MEM_MCP_SWEEP_INTERVAL_MS when they are set.
  * Returns null when HTTP mode was not requested (the server then speaks stdio).
  */
 export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): McpHttpOptions | null {
@@ -119,7 +147,18 @@ export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): 
   if (!portText.trim() || !Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`Invalid MCP HTTP port: ${portText}`);
   }
-  return { host, port };
+  // Only the limits that were actually set are returned, so an unconfigured server
+  // keeps its defaults and the parsed object stays minimal.
+  const maxSessions = positiveIntEnv(env, 'CLAUDE_MEM_MCP_MAX_SESSIONS');
+  const sessionIdleMs = positiveIntEnv(env, 'CLAUDE_MEM_MCP_SESSION_IDLE_MS');
+  const sweepIntervalMs = positiveIntEnv(env, 'CLAUDE_MEM_MCP_SWEEP_INTERVAL_MS');
+  return {
+    host,
+    port,
+    ...(maxSessions !== undefined ? { maxSessions } : {}),
+    ...(sessionIdleMs !== undefined ? { sessionIdleMs } : {}),
+    ...(sweepIntervalMs !== undefined ? { sweepIntervalMs } : {}),
+  };
 }
 
 /** The project directory a request names in its X-Claude-Mem-Cwd header, if usable. */
@@ -183,8 +222,6 @@ export interface StartMcpHttpOptions extends McpHttpOptions {
    * 401. `/health` stays open. Empty or absent: no check.
    */
   localApiToken?: string;
-  /** Defaults to MAX_SESSIONS; tests lower it. */
-  maxSessions?: number;
 }
 
 function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
@@ -235,6 +272,8 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<McpHttpHandle> {
   const bindHost = loopbackHostOrThrow(options.host);
   const maxSessions = options.maxSessions ?? MAX_SESSIONS;
+  const sessionIdleMs = options.sessionIdleMs ?? SESSION_IDLE_MS;
+  const sweepIntervalMs = options.sweepIntervalMs ?? SWEEP_INTERVAL_MS;
   const sessions = new Map<string, Session>();
   // Sessions between createSession and the SDK's onsessioninitialized, so concurrent
   // initialize requests cannot slip past the cap.
@@ -435,7 +474,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
         initializing,
       });
       sendJsonRpcError(res, 503, -32000,
-        `MCP HTTP session limit reached (${maxSessions} open). Close idle MCP clients or restart the server.`);
+        `MCP HTTP session limit reached (${maxSessions} open). Close idle MCP clients, raise CLAUDE_MEM_MCP_MAX_SESSIONS, or restart the server.`);
       return;
     }
     initializing++;
@@ -472,14 +511,14 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   actualPort = (httpServer.address() as AddressInfo).port;
 
   const sweeper = setInterval(() => {
-    const cutoff = Date.now() - SESSION_IDLE_MS;
+    const cutoff = Date.now() - sessionIdleMs;
     for (const [id, session] of sessions) {
       if (session.lastSeen < cutoff) {
         sessions.delete(id);
         void session.transport.close().catch(() => {});
       }
     }
-  }, SWEEP_INTERVAL_MS);
+  }, sweepIntervalMs);
   sweeper.unref();
 
   return {
