@@ -1,6 +1,7 @@
 
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
+import type { ModeConfig } from '../services/domain/types.js';
 
 // TODO(#2233): migrate to Anthropic tool-use API for deterministic JSON output. This text-XML path is the bridge.
 // Only strip fences when the entire payload is a single fenced block. Stripping
@@ -167,7 +168,7 @@ export function summaryFieldsHaveText(
   });
 }
 
-export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
+export function parseAgentXml(raw: string, correlationId?: string | number, mode?: ModeConfig): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
     return { valid: false };
   }
@@ -203,7 +204,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
   const rootName = firstRoot[1].toLowerCase();
   if (rootName === 'observation') {
     const schemaDrift = new Set<string>();
-    const observations = parseObservationBlocks(raw, correlationId, schemaDrift);
+    const observations = parseObservationBlocks(raw, correlationId, schemaDrift, mode);
     if (observations.length === 0) {
       return { valid: false };
     }
@@ -226,11 +227,19 @@ function parseObservationBlocks(
   text: string,
   correlationId?: string | number,
   schemaDrift?: Set<string>,
+  mode?: ModeConfig,
 ): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
   const observationRegex = new RegExp(OBSERVATION_BLOCK.source, 'gi');
   const markup = maskXmlLiteralMarkup(text);
+
+  // The valid types and the fallback come from the active mode. Resolve it once,
+  // outside the loop, and let a caller supply it: a test can then parse against a
+  // mode of its own instead of reaching into ModeManager's process-wide state.
+  const activeMode = mode ?? ModeManager.getInstance().getActiveMode();
+  const validTypes = activeMode.observation_types.map(t => t.id);
+  const fallbackType = validTypes[0];
 
   let match;
   while ((match = observationRegex.exec(markup)) !== null) {
@@ -246,9 +255,6 @@ function parseObservationBlocks(
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
     const attachments = extractAttachmentLabels(obsContent);
 
-    const mode = ModeManager.getInstance().getActiveMode();
-    const validTypes = mode.observation_types.map(t => t.id);
-    const fallbackType = validTypes[0];
     let finalType = fallbackType;
     if (type) {
       finalType = type;

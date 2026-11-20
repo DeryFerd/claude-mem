@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
 
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import type { ModeConfig } from '../../src/services/domain/types.js';
 
 import { parseAgentXml } from '../../src/sdk/parser.js';
 
@@ -33,6 +34,33 @@ beforeEach(() => {
 afterEach(() => {
   const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
   modeManager.activeMode = previousMode;
+});
+
+describe('parseAgentXml — an injected mode', () => {
+  it('parses against the mode it is given instead of the process-wide one', () => {
+    const injected = {
+      observation_types: [{ id: 'injected-type' }],
+      observation_concepts: [],
+    } as unknown as ModeConfig;
+
+    const result = parseAgentXml(
+      '<observation><title>a block with no type field</title></observation>',
+      undefined,
+      injected,
+    );
+
+    if (!result.valid) throw new Error('expected a valid observation result');
+    // The block carries no type, so the parser takes the first type of the mode it was
+    // handed — 'injected-type' — rather than 'bugfix' from the mode in beforeEach.
+    expect(result.observations[0]?.type).toBe('injected-type');
+  });
+
+  it('still reads the process-wide mode when no mode is passed', () => {
+    const result = parseAgentXml('<observation><title>a block with no type field</title></observation>');
+
+    if (!result.valid) throw new Error('expected a valid observation result');
+    expect(result.observations[0]?.type).toBe('bugfix');
+  });
 });
 
 describe('parseAgentXml — observations', () => {
