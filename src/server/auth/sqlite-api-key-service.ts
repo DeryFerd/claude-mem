@@ -17,6 +17,7 @@ import {
   verifyRawKeyAgainstStoredHashAsync,
 } from '../auth/api-key-hash.js';
 import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/index.js';
+import { hasRequiredScopes } from './required-scopes.js';
 import type { ApiKey } from '../../core/schemas/auth.js';
 
 export interface CreatedServerApiKey {
@@ -221,11 +222,4 @@ export function revokeServerApiKey(db: Database, id: string): ApiKey | null {
     });
   }
   return record;
-}
-
-function hasRequiredScopes(grantedScopes: string[], requiredScopes: string[]): boolean {
-  if (requiredScopes.length === 0 || grantedScopes.includes('*')) {
-    return true;
-  }
-  return requiredScopes.every(scope => grantedScopes.includes(scope));
 }

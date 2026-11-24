@@ -20,6 +20,7 @@ import {
   parseBearerToken,
 } from './request-auth-helpers.js';
 import { logger } from '../../utils/logger.js';
+import { hasRequiredScopes } from '../auth/required-scopes.js';
 
 // Postgres-backed auth middleware for the server-beta runtime.
 //
@@ -317,11 +318,4 @@ function normalizeScopes(value: unknown): string[] {
     return [];
   }
   return value.filter((item): item is string => typeof item === 'string');
-}
-
-function hasRequiredScopes(grantedScopes: string[], requiredScopes: string[]): boolean {
-  if (requiredScopes.length === 0 || grantedScopes.includes('*')) {
-    return true;
-  }
-  return requiredScopes.every(scope => grantedScopes.includes(scope));
 }
