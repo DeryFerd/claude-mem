@@ -5,9 +5,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { verifyServerApiKeyAsync } from '../auth/sqlite-api-key-service.js';
 import { ScryptQueueFullError } from '../auth/api-key-hash.js';
 import {
-  hasForwardedClientHeaders,
-  hasLoopbackHostHeader,
-  isLocalhost,
+  isLocalDevBypassRequest,
   parseBearerToken,
 } from './request-auth-helpers.js';
 
@@ -47,14 +45,12 @@ export function requireServerAuth(
     const rawKey = parseBearerToken(authorization) || xApiKey || null;
 
     const allowLocalDevBypass = options.allowLocalDevBypass ?? process.env.CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS === '1';
-    if (
-      !rawKey
-      && authMode === 'local-dev'
-      && allowLocalDevBypass
-      && isLocalhost(req)
-      && hasLoopbackHostHeader(req)
-      && !hasForwardedClientHeaders(req)
-    ) {
+    if (isLocalDevBypassRequest({
+      req,
+      hasCredential: Boolean(rawKey),
+      authMode,
+      allowLocalDevBypass,
+    })) {
       req.authContext = {
         userId: null,
         organizationId: null,

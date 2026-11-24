@@ -14,9 +14,7 @@ import {
   verifyRawKeyAgainstStoredHashAsync,
 } from '../auth/api-key-hash.js';
 import {
-  hasForwardedClientHeaders,
-  hasLoopbackHostHeader,
-  isLocalhost,
+  isLocalDevBypassRequest,
   parseBearerToken,
 } from './request-auth-helpers.js';
 import { logger } from '../../utils/logger.js';
@@ -80,14 +78,12 @@ async function authenticatePostgresRequest(
 
   const allowLocalDevBypass = options.allowLocalDevBypass
     ?? process.env.CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS === '1';
-  if (
-    !rawKey
-    && authMode === 'local-dev'
-    && allowLocalDevBypass
-    && isLocalhost(req)
-    && hasLoopbackHostHeader(req)
-    && !hasForwardedClientHeaders(req)
-  ) {
+  if (isLocalDevBypassRequest({
+    req,
+    hasCredential: Boolean(rawKey),
+    authMode,
+    allowLocalDevBypass,
+  })) {
     const ctx: AuthContext = {
       userId: null,
       organizationId: null,

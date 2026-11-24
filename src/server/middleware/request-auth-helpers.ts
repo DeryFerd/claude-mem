@@ -102,3 +102,22 @@ export function hasForwardedClientHeaders(req: Request): boolean {
       || req.header('x-real-ip')
   );
 }
+
+/**
+ * The one local-dev bypass predicate. Both auth middlewares gate the same
+ * conditions, and a security fix that lands in only one of them is a bypass.
+ * Callers keep their own context shape; only the decision is shared.
+ */
+export function isLocalDevBypassRequest(input: {
+  req: Request;
+  hasCredential: boolean;
+  authMode: string;
+  allowLocalDevBypass: boolean;
+}): boolean {
+  return !input.hasCredential
+    && input.authMode === 'local-dev'
+    && input.allowLocalDevBypass
+    && isLocalhost(input.req)
+    && hasLoopbackHostHeader(input.req)
+    && !hasForwardedClientHeaders(input.req);
+}
